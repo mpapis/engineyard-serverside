@@ -17,6 +17,7 @@ require 'json'
 
 require 'engineyard-serverside/version'
 require 'engineyard-serverside/strategies/git'
+require 'engineyard-serverside/runnable'
 require 'engineyard-serverside/task'
 require 'engineyard-serverside/server'
 require 'engineyard-serverside/deploy'
@@ -26,6 +27,7 @@ require 'engineyard-serverside/cli'
 require 'engineyard-serverside/configuration'
 require 'engineyard-serverside/deprecation'
 require 'engineyard-serverside/future'
+require 'engineyard-serverside/package_manager'
 
 module EY
   module Serverside

@@ -1,3 +1,15 @@
+module EY::Serverside::Runnable
+  # passwordless sudo is neither guaranteed nor desired
+  def sudo(cmd, &block)
+    run(cmd, &block)
+  end
+
+  def run(cmd, &block)
+    @commands << cmd if @commands
+    super
+  end
+end
+
 class FullTestDeploy < EY::Serverside::Deploy
   attr_reader :infos, :debugs, :commands
 
@@ -18,16 +30,6 @@ class FullTestDeploy < EY::Serverside::Deploy
   # no really, stfu
   def debug(msg)
     @debugs << msg
-  end
-
-  # passwordless sudo is neither guaranteed nor desired
-  def sudo(cmd)
-    run(cmd)
-  end
-
-  def run(cmd)
-    @commands << cmd
-    super
   end
 
   def version_specifier
@@ -199,7 +201,7 @@ module EY::Serverside::Strategies::NodeIntegrationSpec
     include EY::Serverside::Strategies::IntegrationSpec::Helpers
 
     def generate_gemfile_in(dir)
-      super(dir)
+      generate_package_json_in(dir)
     end
 
     def generate_package_json_in(dir)

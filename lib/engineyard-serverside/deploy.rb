@@ -24,15 +24,12 @@ module EY
 
         info "~> Starting full deploy"
         copy_repository_cache
-        check_repository
 
         with_failed_release_cleanup do
           create_revision_file
           run_with_callbacks(:bundle)
           setup_services
-          check_for_ey_config
           symlink_configs
-          setup_sqlite3_if_necessary
           conditionally_enable_maintenance_page
           run_with_callbacks(:migrate)
           run_with_callbacks(:compile_assets) # defined in RailsAssetSupport
@@ -52,53 +49,6 @@ module EY
         debug "Finished failing to deploy at #{Time.now.asctime}"
         puts_deploy_failure
         raise
-      end
-
-      def parse_configured_services
-        result = YAML.load_file "#{c.shared_path}/config/ey_services_config_deploy.yml"
-        return {} unless result.is_a?(Hash)
-        result
-      rescue
-        {}
-      end
-
-      def check_for_ey_config
-        if gemfile? && lockfile
-          configured_services = parse_configured_services
-          if !configured_services.empty? && !lockfile.has_ey_config?
-            warning "Gemfile.lock does not contain ey_config. Add it to get EY::Config access to: #{configured_services.keys.join(', ')}."
-          end
-        end
-      end
-
-      def check_repository
-        if gemfile?
-          info "~> Gemfile found."
-          if lockfile
-            info "~> Gemfile.lock found."
-            unless lockfile.any_database_adapter?
-              warning <<-WARN
-Gemfile.lock does not contain a recognized database adapter.
-A database-adapter gem such as mysql2, mysql, or do_mysql was expected.
-This can prevent applications that use MySQL or PostreSQL from booting.
-
-To fix, add any needed adapter to your Gemfile, bundle, commit, and redeploy.
-Applications that don't use MySQL or PostgreSQL can safely ignore this warning.
-              WARN
-            end
-          else
-            warning <<-WARN
-Gemfile.lock is missing!
-You can get different versions of gems in production than what you tested with.
-You can get different versions of gems on every deployment even if your Gemfile hasn't changed.
-Deploying will take longer.
-
-To fix this problem, commit your Gemfile.lock to your repository and redeploy.
-            WARN
-          end
-        else
-          info "~> No Gemfile. Deploying without bundler support."
-        end
       end
 
       def restart_with_maintenance_page
@@ -184,50 +134,9 @@ To fix this problem, commit your Gemfile.lock to your repository and redeploy.
         %{LANG="en_US.UTF-8" /engineyard/bin/app_#{c.app} deploy}
       end
 
-      # GIT_SSH needs to be defined in the environment for customers with private bundler repos in their Gemfile.
-      def clean_environment
-        %Q[export GIT_SSH="#{ssh_executable}" && export LANG="en_US.UTF-8" && unset RUBYOPT BUNDLE_PATH BUNDLE_FROZEN BUNDLE_WITHOUT BUNDLE_BIN BUNDLE_GEMFILE]
-      end
-
-      # If we don't have a local version of the ssh wrapper script yet,
-      # create it on all the servers that will need it.
-      # TODO - This logic likely fails when people change deploy keys.
-      def ssh_executable
-        path = ssh_wrapper_path
-        roles :app_master, :app, :solo, :util do
-          run(generate_ssh_wrapper)
-        end
-        path
-      end
-
-      # We specify 'IdentitiesOnly' to avoid failures on systems with > 5 private keys available.
-      # We set UserKnownHostsFile to /dev/null because StrickHostKeyChecking no doesn't
-      # ignore existing entries in known_hosts; we want to actively ignore all such.
-      # Learned this at http://lists.mindrot.org/pipermail/openssh-unix-dev/2009-February/027271.html
-      # (Thanks Jim L.)
-      def generate_ssh_wrapper
-        path = ssh_wrapper_path
-        identity_file = "~/.ssh/#{c.app}-deploy-key"
-<<-WRAP
-[[ -x #{path} ]] || cat > #{path} <<'SSH'
-#!/bin/sh
-unset SSH_AUTH_SOCK
-ssh -o 'CheckHostIP no' -o 'StrictHostKeyChecking no' -o 'PasswordAuthentication no' -o 'LogLevel DEBUG' -o 'IdentityFile #{identity_file}' -o 'IdentitiesOnly yes' -o 'UserKnownHostsFile /dev/null' $*
-SSH
-chmod 0700 #{path}
-WRAP
-      end
-
-      def ssh_wrapper_path
-        "#{c.shared_path}/config/#{c.app}-ssh-wrapper"
-      end
-
       # task
       def bundle
-        roles :app_master, :app, :solo, :util do
-          check_ruby_bundler
-          check_node_npm
-        end
+        package_manager and package_manager.bundle
       end
 
       # task
@@ -300,13 +209,9 @@ WRAP
         "/usr/local/ey_resin/ruby/bin/ey-services-setup #{config.app}"
       end
 
-      def node_package_manager_command_check
-        "which npm"
-      end
-
       def setup_services
         info "~> Setting up external services."
-        previously_configured_services = parse_configured_services
+        previously_configured_services = c.parsed_configured_services
         begin
           sudo(services_command_check)
         rescue StandardError => e
@@ -324,32 +229,6 @@ Deploy again if your services configuration appears incomplete or out of date.
         end
       end
 
-      def setup_sqlite3_if_necessary
-        if gemfile? && lockfile && lockfile.uses_sqlite3?
-          [
-           ["Create databases directory if needed", "mkdir -p #{c.shared_path}/databases"],
-           ["Creating SQLite database if needed", "touch #{c.shared_path}/databases/#{c.framework_env}.sqlite3"],
-           ["Create config directory if needed", "mkdir -p #{c.release_path}/config"],
-           ["Generating SQLite config", <<-WRAP],
-cat > #{c.shared_path}/config/database.sqlite3.yml<<'YML'
-#{c.framework_env}:
-  adapter: sqlite3
-  database: #{c.shared_path}/databases/#{c.framework_env}.sqlite3
-  pool: 5
-  timeout: 5000
-YML
-WRAP
-           ["Symlink database.yml", "ln -nfs #{c.shared_path}/config/database.sqlite3.yml #{c.release_path}/config/database.yml"],
-          ].each do |what, cmd|
-            info "~> #{what}"
-            run(cmd)
-          end
-
-          owner = [c.user, c.group].join(':')
-          info "~> Setting ownership to #{owner}"
-          sudo "chown -R #{owner} #{c.release_path}"
-        end
-      end
 
       def symlink_configs(release_to_link=c.release_path)
         info "~> Preparing shared resources for release."
@@ -410,10 +289,6 @@ WRAP
         @starting_time ||= Time.now
       end
 
-      def gemfile?
-        File.exist?("#{c.release_path}/Gemfile")
-      end
-
       def base_callback_command_for(what)
         [serverside_bin, 'hook', what.to_s,
           '--app', config.app,
@@ -461,72 +336,8 @@ WRAP
         raise
       end
 
-      def bundler_config
-        version = LockfileParser.default_version
-        options = [
-          "--gemfile #{c.gemfile_path}",
-          "--path #{c.bundled_gems_path}",
-          "--binstubs #{c.binstubs_path}",
-          "--without #{c.bundle_without}"
-        ]
-
-        if lockfile
-          version = lockfile.bundler_version
-          options.unshift('--deployment') # deployment mode is not supported without a Gemfile.lock
-        end
-
-        return [version, options.join(' ')]
-      end
-
-      def lockfile
-        lockfile_path = File.join(c.release_path, "Gemfile.lock")
-        if File.exist?(lockfile_path)
-          @lockfile_parser ||= LockfileParser.new(File.read(lockfile_path))
-        else
-          nil
-        end
-      end
-
-      def check_ruby_bundler
-        if gemfile?
-          info "~> Bundling gems..."
-
-          clean_bundle_on_system_version_change
-
-          bundler_version, install_switches = bundler_config
-          sudo "#{clean_environment} && #{serverside_bin} install_bundler #{bundler_version}"
-          run  "#{clean_environment} && cd #{c.release_path} && ruby -S bundle _#{bundler_version}_ install #{install_switches}"
-
-          write_system_version
-        end
-      end
-
-      def clean_bundle_on_system_version_change
-        # diff exits with 0 for same and 1/2 for different/file not found.
-        check_ruby   = "#{c.ruby_version_command} | diff - #{c.ruby_version_file} >/dev/null 2>&1"
-        check_system = "#{c.system_version_command} | diff - #{c.system_version_file} >/dev/null 2>&1"
-        say_cleaning = "echo 'New deploy or system version change detected, cleaning bundled gems.'"
-        clean_bundle = "rm -Rf #{c.bundled_gems_path}"
-
-        run "#{check_ruby} && #{check_system} || (#{say_cleaning} && #{clean_bundle})"
-      end
-
-      def write_system_version
-        store_ruby_version   = "#{c.ruby_version_command} > #{c.ruby_version_file}"
-        store_system_version = "#{c.system_version_command} > #{c.system_version_file}"
-
-        run "mkdir -p #{c.bundled_gems_path} && #{store_ruby_version} && #{store_system_version}"
-      end
-
-      def check_node_npm
-        if File.exist?("#{c.release_path}/package.json")
-          unless run(node_package_manager_command_check)
-            abort "*** [Error] package.json detected, but npm was not installed"
-          else
-            info "~> package.json detected, installing npm packages"
-            run "cd #{c.release_path} && npm install"
-          end
-        end
+      def package_manager
+        @manager ||= EY::Serverside::PackageManager.resolve(c)
       end
     end   # DeployBase
 

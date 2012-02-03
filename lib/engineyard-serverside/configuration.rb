@@ -180,6 +180,14 @@ module EY
         copy_exclude.map { |e| %|--exclude="#{e}"| }.join(' ')
       end
 
+      def parsed_configured_services
+        result = YAML.load_file "#{shared_path}/config/ey_services_config_deploy.yml"
+        return {} unless result.is_a?(Hash)
+        result
+      rescue
+        {}
+      end
+
     end
   end
 end
