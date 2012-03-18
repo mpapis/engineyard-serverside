@@ -212,7 +212,7 @@ To fix this problem, commit your Gemfile.lock to your repository and redeploy.
 [[ -x #{path} ]] || cat > #{path} <<'SSH'
 #!/bin/sh
 unset SSH_AUTH_SOCK
-ssh -o 'CheckHostIP no' -o 'StrictHostKeyChecking no' -o 'PasswordAuthentication no' -o 'LogLevel DEBUG' -o 'IdentityFile #{identity_file}' -o 'IdentitiesOnly yes' -o 'UserKnownHostsFile /dev/null' $*
+ssh -o CheckHostIP=no -o StrictHostKeyChecking=no -o PasswordAuthentication=no -o LogLevel=DEBUG -o IdentityFile=#{identity_file} -o IdentitiesOnly=yes -o UserKnownHostsFile=/dev/null $*
 SSH
 chmod 0700 #{path}
 WRAP
