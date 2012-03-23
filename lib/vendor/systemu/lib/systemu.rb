@@ -195,8 +195,11 @@ class SystemUniversal
         PIPE.puts "pid: \#{ Process.pid }"
         PIPE.flush                        ### the process is ready yo!
         PIPE.close
-
-        exec *argv
+        if RUBY_VERSION >= "1.9"
+          exec *argv
+        else
+          exec argv
+        end
       rescue Exception => e
         PIPE.write Marshal.dump(e) rescue nil
         exit 42
