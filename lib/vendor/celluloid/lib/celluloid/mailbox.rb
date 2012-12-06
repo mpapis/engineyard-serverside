@@ -13,39 +13,41 @@ module Celluloid
     alias_method :address, :object_id
 
     def initialize
-      @messages = []
-      @lock  = Mutex.new
-      @dead = false
+      @messages  = []
+      @mutex     = Mutex.new
+      @dead      = false
       @condition = ConditionVariable.new
     end
 
     # Add a message to the Mailbox
     def <<(message)
-      @lock.synchronize do
-        raise MailboxError, "dead recipient" if @dead
+      @mutex.lock
+      begin
+        if message.is_a?(SystemEvent)
+          # Silently swallow system events sent to dead actors
+          return if @dead
 
-        @messages << message
-        @condition.signal
-      end
-      nil
-    end
-
-    # Add a high-priority system event to the Mailbox
-    def system_event(event)
-      @lock.synchronize do
-        unless @dead # Silently fail if messages are sent to dead actors
-          @messages.unshift event
-          @condition.signal
+          # SystemEvents are high priority messages so they get added to the
+          # head of our message queue instead of the end
+          @messages.unshift message
+        else
+          raise MailboxError, "dead recipient" if @dead
+          @messages << message
         end
+
+        @condition.signal
+        nil
+      ensure
+        @mutex.unlock rescue nil
       end
-      nil
     end
 
     # Receive a message from the Mailbox
     def receive(timeout = nil, &block)
       message = nil
 
-      @lock.synchronize do
+      @mutex.lock
+      begin
         raise MailboxError, "attempted to receive from a dead mailbox" if @dead
 
         begin
@@ -56,17 +58,19 @@ module Celluloid
               now = Time.now
               wait_until ||= now + timeout
               wait_interval = wait_until - now
-              return if wait_interval < 0
+              return if wait_interval <= 0
             else
               wait_interval = nil
             end
 
-            @condition.wait(@lock, wait_interval)
+            @condition.wait(@mutex, wait_interval)
           end
         end until message
-      end
 
-      message
+        message
+      ensure
+        @mutex.unlock rescue nil
+      end
     end
 
     # Retrieve the next message in the mailbox
@@ -83,18 +87,18 @@ module Celluloid
         message = @messages.shift
       end
 
-      raise message if message.is_a? SystemEvent
       message
     end
 
     # Shut down this mailbox and clean up its contents
     def shutdown
-      messages = nil
-
-      @lock.synchronize do
+      @mutex.lock
+      begin
         messages = @messages
         @messages = []
         @dead = true
+      ensure
+        @mutex.unlock rescue nil
       end
 
       messages.each { |msg| msg.cleanup if msg.respond_to? :cleanup }
@@ -108,7 +112,7 @@ module Celluloid
 
     # Cast to an array
     def to_a
-      @lock.synchronize { @messages.dup }
+      @mutex.synchronize { @messages.dup }
     end
 
     # Iterate through the mailbox

@@ -13,10 +13,12 @@ module EY
       # and if it's accessed without a value, it should raise.
       def self.def_option(name, default=nil, key=nil, &block)
         key ||= name.to_s
-        if block_given?
-          define_method(name) { fetch(key) {instance_eval(&block)} }
-        else
-          define_method(name) { fetch(key, default) }
+        define_method(name) do
+          if block
+            val = fetch(key) {instance_eval(&block)}
+          else
+            val = fetch(key, default)
+          end
         end
       end
 
@@ -221,16 +223,17 @@ module EY
         framework_env_names.each { |e| ENV[e] = environment }
       end
 
+      # precompile_assets is nil by default.
       def precompile_assets_inferred?
         !precompile_assets? && !skip_precompile_assets?
       end
 
       def precompile_assets?
-        precompile_assets == true
+        [true, 'true'].include? precompile_assets
       end
 
       def skip_precompile_assets?
-        precompile_assets == false
+        [false, 'false'].include? precompile_assets
       end
 
       # Assume downtime required if stack is not specified (nil) just in case.

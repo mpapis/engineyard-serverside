@@ -1,4 +1,5 @@
 require 'set'
+require 'timers'
 
 module Celluloid
   # Allow methods to directly interact with the actor protocol
@@ -10,17 +11,21 @@ module Celluloid
 
     # Receive an asynchronous message
     def receive(timeout = nil, &block)
-      receiver = Receiver.new block
+      if Celluloid.exclusive?
+        Thread.mailbox.receive(timeout, &block)
+      else
+        receiver = Receiver.new block
 
-      if timeout
-        receiver.timer = @timers.add(timeout) do
-          @receivers.delete receiver
-          receiver.resume
+        if timeout
+          receiver.timer = @timers.after(timeout) do
+            @receivers.delete receiver
+            receiver.resume
+          end
         end
-      end
 
-      @receivers << receiver
-      Task.suspend
+        @receivers << receiver
+        Task.suspend :receiving
+      end
     end
 
     # How long to wait until the next timer fires
@@ -56,7 +61,7 @@ module Celluloid
 
     # Match a message with this receiver's block
     def match(message)
-      @block.call(message) if @block
+      @block ? @block.call(message) : true
     end
 
     def resume(message = nil)

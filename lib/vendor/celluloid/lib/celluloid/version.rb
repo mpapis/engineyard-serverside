@@ -1,4 +1,4 @@
 module Celluloid
-  VERSION = '0.7.1'
+  VERSION = '0.12.3'
   def self.version; VERSION; end
 end

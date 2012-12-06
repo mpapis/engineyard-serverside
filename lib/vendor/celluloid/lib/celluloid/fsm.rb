@@ -1,30 +1,28 @@
 module Celluloid
-  # Turn concurrent objects into finite state machines
-  # Inspired by Erlang's gen_fsm. See http://www.erlang.org/doc/man/gen_fsm.html
+  # Simple finite state machines with integrated Celluloid timeout support
+  # Inspired by Erlang's gen_fsm (http://www.erlang.org/doc/man/gen_fsm.html)
+  #
+  # Basic usage:
+  #
+  #     class MyMachine
+  #       include Celluloid::FSM # NOTE: this does NOT pull in the Celluloid module
+  #     end
+  #
+  # Inside an actor:
+  #
+  #     #
+  #     machine = MyMachine.new(current_actor)
   module FSM
+    class UnattachedError < StandardError; end # Not attached to an actor
+
     DEFAULT_STATE = :default # Default state name unless one is explicitly set
 
     # Included hook to extend class methods
     def self.included(klass)
-      klass.send :include, Celluloid
-      klass.send :extend,  ClassMethods
+      klass.send :extend, ClassMethods
     end
 
     module ClassMethods
-      # Ensure FSMs transition into the default state after they're initialized
-      def new(*args, &block)
-        fsm = super
-        fsm.transition default_state
-        fsm
-      end
-
-      # Ensure FSMs transition into the default state after they're initialized
-      def new_link(*args, &block)
-        fsm = super
-        fsm.transition default_state
-        fsm
-      end
-
       # Obtain or set the default state
       # Passing a state name sets the default state
       def default_state(new_default = nil)
@@ -45,6 +43,7 @@ module Celluloid
       # * to: a state or array of states this state can transition to
       def state(*args, &block)
         if args.last.is_a? Hash
+          # Stringify keys :/
           options = args.pop.inject({}) { |h,(k,v)| h[k.to_s] = v; h }
         else
           options = {}
@@ -52,16 +51,30 @@ module Celluloid
 
         args.each do |name|
           name = name.to_sym
+          default_state name if options['default']
           states[name] = State.new(name, options['to'], &block)
         end
       end
     end
 
-    # Obtain the current state of the FSM
-    def current_state
-      defined?(@state) ? @state : @state = self.class.default_state
+    attr_reader :actor
+
+    # Be kind and call super if you must redefine initialize
+    def initialize(actor = nil)
+      @state = self.class.default_state
+      @actor = actor
+      @actor ||= Celluloid.current_actor if Celluloid.actor?
     end
-    alias_method :state, :current_state
+
+    # Obtain the current state of the FSM
+    attr_reader :state
+
+    # Attach this FSM to an actor. This allows FSMs to wait for and initiate
+    # events in the context of a particular actor
+    def attach(actor)
+      @actor = actor
+    end
+    alias_method :actor=, :attach
 
     # Transition to another state
     # Options:
@@ -71,50 +84,80 @@ module Celluloid
     #
     # Note: making additional state transitions will cancel delayed transitions
     def transition(state_name, options = {})
-      state_name = state_name.to_sym
-      current_state = self.class.states[@state]
+      new_state = validate_and_sanitize_new_state(state_name)
+      return unless new_state
 
-      return if current_state && current_state.name == state_name
+      if handle_delayed_transitions(new_state, options[:delay])
+        return @delayed_transition
+      end
+
+      transition_with_callbacks!(new_state)
+    end
+
+    # Immediate state transition with no sanity checks, or callbacks. "Dangerous!"
+    def transition!(state_name)
+      @state = state_name
+    end
+
+    protected
+
+    def validate_and_sanitize_new_state(state_name)
+      state_name = state_name.to_sym
+
+      return if current_state_name == state_name
 
       if current_state and not current_state.valid_transition? state_name
         valid = current_state.transitions.map(&:to_s).join(", ")
         raise ArgumentError, "#{self.class} can't change state from '#{@state}' to '#{state_name}', only to: #{valid}"
       end
 
-      new_state = self.class.states[state_name]
+      new_state = states[state_name]
 
-      if !new_state and state_name == self.class.default_state
-        # FIXME This probably isn't thread safe... or wise
-        new_state = self.class.states[state_name] = State.new(state_name)
-      end
-
-      if new_state
-        if options[:delay]
-          @delayed_transition.cancel if @delayed_transition
-
-          @delayed_transition = after(options[:delay]) do
-            transition! new_state.name
-            new_state.call(self)
-          end
-
-          return @delayed_transition
-        end
-
-        if defined?(@delayed_transition) and @delayed_transition
-          @delayed_transition.cancel
-          @delayed_transition = nil
-        end
-
-        transition! new_state.name
-        new_state.call(self)
-      else
+      unless new_state
+        return if state_name == default_state
         raise ArgumentError, "invalid state for #{self.class}: #{state_name}"
       end
+
+      new_state
     end
 
-    # Immediate state transition with no sanity checks. "Dangerous!"
-    def transition!(state_name)
-      @state = state_name
+    def transition_with_callbacks!(state_name)
+      transition! state_name.name
+      state_name.call(self)
+    end
+
+    def states
+      self.class.states
+    end
+
+    def default_state
+      self.class.default_state
+    end
+
+    def current_state
+      states[@state]
+    end
+
+    def current_state_name
+      current_state && current_state.name || ''
+    end
+
+    def handle_delayed_transitions(new_state, delay)
+      if delay
+        raise UnattachedError, "can't delay unless attached" unless @actor
+        @delayed_transition.cancel if @delayed_transition
+
+        @delayed_transition = @actor.after(delay) do
+          transition_with_callbacks!(new_state)
+        end
+
+        return @delayed_transition
+      end
+
+      if defined?(@delayed_transition) and @delayed_transition
+        @delayed_transition.cancel
+        @delayed_transition = nil
+      end
     end
 
     # FSM states as declared by Celluloid::FSM.state

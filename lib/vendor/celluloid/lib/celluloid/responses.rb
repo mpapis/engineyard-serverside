@@ -1,10 +1,14 @@
 module Celluloid
   # Responses to calls
   class Response
-    attr_reader :call_id, :value
+    attr_reader :call, :value
 
-    def initialize(call_id, value)
-      @call_id, @value = call_id, value
+    def initialize(call, value)
+      @call, @value = call, value
+    end
+
+    def dispatch
+      @call.task.resume self
     end
   end
 
@@ -17,7 +21,7 @@ module Celluloid
       if super.is_a? AbortError
         # Aborts are caused by caller error, so ensure they capture the
         # caller's backtrace instead of the receiver's
-        raise super.cause.class.new(super.cause.message)
+        raise super.cause.exception
       else
         raise super
       end

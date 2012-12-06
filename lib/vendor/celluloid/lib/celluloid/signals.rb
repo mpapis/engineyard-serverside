@@ -9,8 +9,9 @@ module Celluloid
 
     # Wait for the given signal and return the associated value
     def wait(signal)
-      tasks = @waiting[signal]
+      raise "cannot wait for signals while exclusive" if Celluloid.exclusive?
 
+      tasks = @waiting[signal]
       case tasks
       when Array
         tasks << Task.current
@@ -20,7 +21,7 @@ module Celluloid
         @waiting[signal] = [tasks, Task.current]
       end
 
-      Task.suspend
+      Task.suspend :sigwait
     end
 
     # Send a signal to all method calls waiting for the given name
@@ -31,20 +32,20 @@ module Celluloid
       case tasks
       when Array
         tasks.each { |task| run_task task, value }
+        true if tasks.size > 0
       when NilClass
-        Logger.debug("spurious signal: #{name}")
+        false
       else
         run_task tasks, value
+        true
       end
-
-      value
     end
 
     # Run the given task, reporting errors that occur
     def run_task(task, value)
       task.resume(value)
     rescue => ex
-      Celluloid::Logger.crash("signaling error", ex)
+      Logger.crash("signaling error", ex)
     end
   end
 end

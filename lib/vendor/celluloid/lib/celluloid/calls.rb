@@ -1,19 +1,27 @@
 module Celluloid
   # Calls represent requests to an actor
   class Call
-    attr_reader :id, :caller, :method, :arguments, :block
+    attr_reader :method, :arguments, :block
 
-    def initialize(caller, method, arguments, block)
-      @id = object_id # memoize object ID for serialization
-      @caller, @method, @arguments, @block = caller, method, arguments, block
+    def initialize(method, arguments = [], block = nil)
+      @method, @arguments, @block = method, arguments, block
     end
 
     def check_signature(obj)
       unless obj.respond_to? @method
-        raise NoMethodError, "undefined method `#{@method}' for #{obj.inspect}"
+        raise NoMethodError, "undefined method `#{@method}' for #{obj.to_s}"
       end
 
-      arity = obj.method(@method).arity
+      begin
+        arity = obj.method(@method).arity
+      rescue NameError
+        # If the object claims it responds to a method, but it doesn't exist,
+        # then we have to assume method_missing will do what it says
+        @arguments.unshift(@method)
+        @method = :method_missing
+        return
+      end
+
       if arity >= 0
         if arguments.size != arity
           raise ArgumentError, "wrong number of arguments (#{arguments.size} for #{arity})"
@@ -29,11 +37,19 @@ module Celluloid
 
   # Synchronous calls wait for a response
   class SyncCall < Call
+    attr_reader :caller, :task
+
+    def initialize(caller, method, arguments = [], block = nil, task = Thread.current[:task])
+      super(method, arguments, block)
+      @caller = caller
+      @task = task
+    end
+
     def dispatch(obj)
       begin
         check_signature(obj)
-      rescue Exception => ex
-        respond ErrorResponse.new(@id, AbortError.new(ex))
+      rescue => ex
+        respond ErrorResponse.new(self, AbortError.new(ex))
         return
       end
 
@@ -42,7 +58,7 @@ module Celluloid
       rescue Exception => exception
         # Exceptions that occur during synchronous calls are reraised in the
         # context of the caller
-        respond ErrorResponse.new(@id, exception)
+        respond ErrorResponse.new(self, exception)
 
         if exception.is_a? AbortError
           # Aborting indicates a protocol error on the part of the caller
@@ -54,17 +70,13 @@ module Celluloid
         end
       end
 
-      respond SuccessResponse.new(@id, result)
+      respond SuccessResponse.new(self, result)
     end
 
     def cleanup
       exception = DeadActorError.new("attempted to call a dead actor")
-      respond ErrorResponse.new(@id, exception)
+      respond ErrorResponse.new(self, exception)
     end
-
-    #######
-    private
-    #######
 
     def respond(message)
       @caller << message
@@ -80,14 +92,15 @@ module Celluloid
       begin
         check_signature(obj)
       rescue Exception => ex
-        Logger.crash("#{obj.class}: async call failed!", ex)
+        Logger.crash("#{obj.class}: async call `#{@method}' failed!", ex)
         return
       end
 
       obj.send(@method, *@arguments, &@block)
     rescue AbortError => ex
       # Swallow aborted async calls, as they indicate the caller made a mistake
-      Logger.crash("#{obj.class}: async call aborted!", ex)
+      Logger.crash("#{obj.class}: async call `#{@method}' aborted!", ex.cause)
     end
   end
 end
+

@@ -1,6 +1,9 @@
 module EY
   module Serverside
+    $LOAD_PATH.unshift File.expand_path('../../vendor/facter/lib', File.dirname(__FILE__))
+    $LOAD_PATH.unshift File.expand_path('../../vendor/timers/lib', File.dirname(__FILE__))
     $LOAD_PATH.unshift File.expand_path('../../vendor/celluloid/lib', File.dirname(__FILE__))
+
     require 'celluloid'
     class Future
       def self.call(blocks)
