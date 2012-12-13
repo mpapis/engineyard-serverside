@@ -1,9 +1,8 @@
 require 'logger'
 require 'pathname'
-require 'systemu'
 require 'engineyard-serverside/shell/formatter'
-require 'engineyard-serverside/shell/command_result'
 require 'engineyard-serverside/shell/yieldio'
+require 'engineyard-serverside/spawn'
 
 module EY
   module Serverside
@@ -55,21 +54,15 @@ module EY
         debug cmd.gsub(/^/, '   > ').sub(/>/, '$')
       end
 
-      def logged_system(cmd)
-        show_command(cmd)
-        output = ""
-        outio = YieldIO.new { |msg| output << msg; debug   msg.gsub(/^/,'     ') }
-        errio = YieldIO.new { |msg| output << msg; unknown msg.gsub(/^/,'     ') }
-        result = spawn_process(cmd, outio, errio)
-        CommandResult.new(cmd, result.exitstatus, output)
+      def yield_ios
+        outio = YieldIO.new { |msg| debug   msg.gsub(/^/,'     ') }
+        errio = YieldIO.new { |msg| unknown msg.gsub(/^/,'     ') }
+        [outio, errio]
       end
 
-      protected
-
-      # This is the meat of process spawning. It's nice to keep it separate even
-      # though it's simple because we've had to modify it frequently.
-      def spawn_process(cmd, outio, errio)
-        systemu cmd, 'stdout' => outio, 'stderr' => errio
+      def logged_system(cmd)
+        show_command(cmd)
+        EY::Serverside::Spawn.spawn(cmd, *yield_ios)
       end
     end
   end

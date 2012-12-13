@@ -83,7 +83,7 @@ describe "deploy hooks" do
       it "runs things with sudo" do
         hook = deploy_hook
         cmd = "sudo sh -l -c 'do it as root'"
-        result = EY::Serverside::Shell::CommandResult.new(cmd, 0, "out\nerr")
+        result = EY::Serverside::CommandResult.new(cmd, 0, "out\nerr")
         hook.callback_context.shell.should_receive(:logged_system).with(cmd).and_return(result)
         hook.eval_hook('sudo("do it as root") || raise("failed")')
       end
@@ -91,7 +91,7 @@ describe "deploy hooks" do
       it "raises when the bang method alternative is used" do
         hook = deploy_hook
         cmd = "sudo sh -l -c false"
-        result = EY::Serverside::Shell::CommandResult.new(cmd, 1, "fail")
+        result = EY::Serverside::CommandResult.new(cmd, 1, "fail")
         hook.callback_context.shell.should_receive(:logged_system).with(cmd).and_return(result)
         lambda {
           hook.eval_hook('sudo!("false")')
